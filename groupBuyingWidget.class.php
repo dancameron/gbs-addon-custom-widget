@@ -15,9 +15,57 @@ class Group_Buying_Widget_Addon extends Group_Buying_Controller {
 			),
 			'callbacks' => array(
 				array( 'Group_Buying_Widget', 'init' ),
+				array( 'Group_Buying_Voucher_Claim_Modifications', 'init' ),
 			),
 		);
 		return $addons;
+	}
+
+}
+
+class Group_Buying_Voucher_Claim_Modifications extends Group_Buying_Controller {
+
+	public static function init() {
+		add_action( 'init', array( get_class(), 'attempt_process_claim' ) );
+	}
+
+	public function attempt_process_claim() {
+		if ( !empty( $_POST ) && wp_verify_nonce($_POST['merchant_voucher_claim_nonce'], 'merchant_voucher_claim') ) {
+			
+			extract( $_POST['gb_voucher_redemption_data'] );
+
+			if ( isset( $gb_voucher_claim_security_code ) ) {
+				$voucher_ids = Group_Buying_Voucher::get_voucher_by_security_code( $gb_voucher_claim_security_code );
+				$voucher_id = array_shift( $voucher_ids );
+			}
+			elseif ( isset( $gb_voucher_claim_voucher_id ) ) {
+				$voucher_ids = Group_Buying_Voucher::get_voucher_by_serial( $gb_voucher_claim_voucher_id );
+				$voucher_id = array_shift( $voucher_ids );
+			}
+			elseif ( isset( $gb_voucher_claim_name ) ) {
+				// nothing yet
+			}
+
+			$voucher = Group_Buying_Voucher::get_instance( $voucher_id );
+			$claimed = FALSE;
+			if ( is_a( $voucher, 'Group_Buying_Voucher' ) ) {
+				if ( FALSE != $voucher->set_claimed_date() ) {
+					do_action( 'gb_voucher_merchant_redeemed', $voucher );
+					$voucher->set_redemption_data( $_POST['gb_voucher_redemption_data'] );
+					self::set_message( __( 'Voucher Claim Status Updated.' ), self::MESSAGE_STATUS_INFO );
+					return;
+				}
+				else {
+					self::set_message( __( 'Error: Voucher already claimed.' ), self::MESSAGE_STATUS_ERROR );
+					return;
+				}
+			}
+			if ( !$claimed ) {
+				self::set_message( __( 'Error: Security code or Voucher ID is not valid.' ), self::MESSAGE_STATUS_ERROR );
+				return;
+			}
+
+		}
 	}
 
 }
@@ -33,82 +81,46 @@ class Group_Buying_Widget extends WP_Widget {
 	}
 
 	function Group_Buying_Widget() {
-		$widget_ops = array( 'description' => gb__( 'Custom widget.' ) );
-		parent::WP_Widget( false, $name = gb__( 'Group Buying :: Custom Widget' ), $widget_ops );
+		$widget_ops = array( 'description' => gb__( 'Merchant widget to help voucher claiming.' ) );
+		parent::WP_Widget( false, $name = gb__( 'Group Buying :: Merchant Widget' ), $widget_ops );
 	}
 
 	function widget( $args, $instance ) {
-		do_action( 'pre_recent_deals', $args, $instance );
-		global $gb, $wp_query;
-		$temp = null;
 		extract( $args );
-
 		$title = apply_filters( 'widget_title', $instance['title'] );
-		$buynow = empty( $instance['buynow'] ) ? 'Buy Now' : $instance['buynow'];
-		$deals = apply_filters( 'gb_recent_deals_widget_show', $instance['deals'] );
-		if ( is_single() ) {
-			$post_not_in = $wp_query->post->ID;
-		}
-		$count = 1;
-		$deal_query= null;
-		$args=array(
-			'post_type' => gb_get_deal_post_type(),
-			'post_status' => 'publish',
-			'meta_query' => array(
-				array(
-					'key' => '_expiration_date',
-					'value' => array( 0, current_time( 'timestamp' ) ),
-					'compare' => 'NOT BETWEEN'
-				) ),
-			'posts_per_page' => $deals,
-			'post__not_in' => array( $post_not_in )
-		);
+		$description = ( $instance['description'] != '' ) ? $instance['description'] : gb__('Enter a Voucher ID or Security Code and your claim notes to mark a voucher as claimed.') ;
 
-		$deal_query = new WP_Query( $args );
-		if ( $deal_query->have_posts() ) {
-			echo $before_widget;
-			echo $before_title . $title . $after_title;
-			while ( $deal_query->have_posts() ) : $deal_query->the_post();
+		do_action( 'gb_pre_merchant_claim_widget', $args, $instance );
+		echo $before_widget;
+		echo $before_title . $title . $after_title;
 
-			Group_Buying_Controller::load_view( 'widgets/recent-deals.php', array( 'buynow'=>$buynow ) );
+		include 'views/widget.php';
 
-			endwhile;
-			echo $after_widget;
-		}
-		$deal_query = null; $deal_query = $temp;
-		wp_reset_query();
-		do_action( 'post_recent_deals', $args, $instance );
+		echo $after_widget;
+
+		do_action( 'gb_merchant_claim_widget', $args, $instance );
 	}
 
 	function update( $new_instance, $old_instance ) {
 		$instance = $old_instance;
 		$instance['title'] = strip_tags( $new_instance['title'] );
-		$instance['buynow'] = strip_tags( $new_instance['buynow'] );
-		$instance['deals'] = strip_tags( $new_instance['deals'] );
-		$instance['show_expired'] = strip_tags( $new_instance['show_expired'] );
+		$instance['description'] = strip_tags( $new_instance['description'] );
 		return $instance;
 	}
 
 	function form( $instance ) {
 		$title = esc_attr( $instance['title'] );
-		$buynow = esc_attr( $instance['buynow'] );
-		$deals = esc_attr( $instance['deals'] );
-		$show_expired = esc_attr( $instance['show_expired'] );
+		$description = esc_attr( $instance['description'] );
 		?>
-            <p><label for="<?php echo $this->get_field_id( 'title' ); ?>"><?php _e( 'Title:' ); ?> <input class="widefat" id="<?php echo $this->get_field_id( 'title' ); ?>" name="<?php echo $this->get_field_name( 'title' ); ?>" type="text" value="<?php echo $title; ?>" /></label></p>
-            <p><label for="<?php echo $this->get_field_id( 'buynow' ); ?>"><?php _e( 'Buy now link text:' ); ?> <input class="widefat" id="<?php echo $this->get_field_id( 'buynow' ); ?>" name="<?php echo $this->get_field_name( 'buynow' ); ?>" type="text" value="<?php echo $buynow; ?>" /></label></p>
-            <p><label for="<?php echo $this->get_field_id( 'deals' ); ?>"><?php _e( 'Number of deals to display:' ); ?>
-            	<select id="<?php echo $this->get_field_id( 'deals' ); ?>" name="<?php echo $this->get_field_name( 'deals' ); ?>">
-					<option value="1">1</option>
-					<option value="2"<?php if ( $deals=="2" ) {echo ' selected="selected"';} ?>>2</option>
-					<option value="3"<?php if ( $deals=="3" ) {echo ' selected="selected"';} ?>>3</option>
-					<option value="4"<?php if ( $deals=="4" ) {echo ' selected="selected"';} ?>>4</option>
-					<option value="5"<?php if ( $deals=="5" ) {echo ' selected="selected"';} ?>>5</option>
-					<option value="10"<?php if ( $deals=="10" ) {echo ' selected="selected"';} ?>>10</option>
-					<option value="15"<?php if ( $deals=="15" ) {echo ' selected="selected"';} ?>>15</option>
-					<option value="-1"<?php if ( $deals=="-1" ) {echo ' selected="selected"';} ?>>All</option>
-				 </select>
-            </label></p>
+            <p>
+            	<label for="<?php echo $this->get_field_id( 'title' ); ?>"><?php _e( 'Title:' ); ?></label>
+            	<input class="widefat" id="<?php echo $this->get_field_id( 'title' ); ?>" name="<?php echo $this->get_field_name( 'title' ); ?>" type="text" value="<?php echo $title; ?>" />
+            </p>
+            <p>
+            	<label for="<?php echo $this->get_field_id( 'description' ); ?>"><?php _e( 'Note (above fields):' ); ?></label>
+            	<textarea class="widefat" type="textarea" name="<?php echo $this->get_field_name( 'description' ); ?>" id="<?php echo $this->get_field_id( 'description' ); ?>"><?php echo $description; ?></textarea>
+            </p>
+
         <?php
 	}
 }
